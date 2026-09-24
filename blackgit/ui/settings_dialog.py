@@ -89,6 +89,10 @@ class SettingsDialog(tk.Toplevel):
         btns.pack(fill="x", pady=(18, 0))
 
         HoverButton(
+            btns, text="ورود به Rubika", command=self._login, kind="primary",
+            pady=8, padx=14,
+        ).pack(side="left", padx=(0, 8))
+        HoverButton(
             btns, text="تست اتصال", command=self._test, kind="ghost",
             pady=8, padx=12,
         ).pack(side="left")
@@ -133,14 +137,32 @@ class SettingsDialog(tk.Toplevel):
         messagebox.showinfo("Black Git Iran", "تنظیمات ذخیره شد", parent=self)
         self.destroy()
 
+    def _find_app(self):
+        parent = self.master
+        while parent is not None and not hasattr(parent, "login_to_rubika"):
+            parent = getattr(parent, "master", None)
+        return parent
+
+    def _login(self):
+        s = self._collect()
+        s.save()
+        if self.on_save:
+            self.on_save(s)
+        app = self._find_app()
+        if app is not None:
+            self.destroy()
+            app.login_to_rubika()
+
     def _test(self):
         s = self._collect()
         s.save()
         if self.on_save:
             self.on_save(s)
-        parent = self.master
-        while parent is not None and not hasattr(parent, "test_connection"):
-            parent = getattr(parent, "master", None)
+        parent = self._find_app()
+        if parent is None:
+            parent = self.master
+            while parent is not None and not hasattr(parent, "test_connection"):
+                parent = getattr(parent, "master", None)
         if parent is not None:
             self.destroy()
             parent.test_connection()

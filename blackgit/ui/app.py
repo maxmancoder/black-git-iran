@@ -119,6 +119,12 @@ class BlackGitApp(tk.Tk):
         )
         self.item_send.pack(fill="x")
 
+        self.item_login = SidebarItem(
+            nav, "🔑", "ورود به Rubika", command=self.login_to_rubika,
+            dot_color=S.WARN,
+        )
+        self.item_login.pack(fill="x")
+
         self.item_test = SidebarItem(
             nav, "⇄", "تست اتصال", command=self.test_connection, dot_color=S.DOT_GRAY
         )
@@ -459,6 +465,45 @@ class BlackGitApp(tk.Tk):
         )
         if not self.worker.start(job):
             self.item_test.set_enabled(True)
+
+    def login_to_rubika(self):
+        """The ONLY flow that waits for OTP — one-time session save."""
+        if not self._guard_busy():
+            return
+        s = self.settings
+        group_url = s.rubika_group_url  # may be empty; login doesn't need it
+        profile = s.browser_profile_dir
+        self.item_login.set_enabled(False)
+        self._log("info", "Opening Rubika login (one-time)...")
+
+        def job(status):
+            from ..transport.rubika.web import RubikaWebTransport
+
+            t = RubikaWebTransport(profile, group_url or "https://web.rubika.ir/")
+            try:
+                t.login(on_status=status)
+                return {"ok": True}
+            finally:
+                t.close()
+
+        def on_ok(_r):
+            self._conn_ok = True
+            self.item_login.set_dot(S.OK)
+            self.item_test.set_dot(S.OK)
+            self._set_big_status("LOGGED IN", S.OK)
+            self._log("ok", "Rubika session saved — operations will not wait for OTP")
+
+        def on_finished():
+            self.item_login.set_enabled(True)
+
+        self.worker.bind(
+            on_status=self._on_status,
+            on_error=self._on_error,
+            on_result=on_ok,
+            on_finished=on_finished,
+        )
+        if not self.worker.start(job):
+            self.item_login.set_enabled(True)
 
 
 def run_app():

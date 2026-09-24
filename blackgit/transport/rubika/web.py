@@ -78,8 +78,6 @@ class RubikaWebTransport(Transport):
     def _start(self, on_status: StatusCb | None = None) -> Page:
         if self._page is not None:
             return self._page
-        if not self.group_url:
-            raise TransportError("لینک گروه/کانال در تنظیمات خالی است")
 
         def st(m):
             if on_status:
@@ -206,54 +204,83 @@ class RubikaWebTransport(Transport):
 
         return False
 
-    def _ensure_login(self, page: Page, on_status: StatusCb | None = None) -> None:
+    def _on_login_wall(self, page: Page) -> bool:
+        """True only if a real login/OTP form is visible on screen."""
+        if not self._page_alive(page):
+            return False
+        try:
+            wall = page.locator(SEL_LOGIN_FORM)
+            for i in range(min(wall.count(), 12)):
+                try:
+                    if wall.nth(i).is_visible():
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        try:
+            url = (page.url or "").lower()
+            if any(x in url for x in ("/login", "signin", "sign-in", "/auth", "otp")):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def login(self, on_status: StatusCb | None = None) -> None:
+        """Manual login flow — ONLY this waits for the user (OTP etc.).
+
+        Operations (upload/download) never wait; they fail fast instead.
+        """
         def st(m):
             if on_status:
                 on_status(m)
 
-        st("بررسی ورود به Rubika...")
-        # First login may take a while: phone + password + SMS code.
-        # Keep the browser open; do NOT navigate away until truly logged in.
-        deadline = time.time() + 600  # 10 minutes
-        hint_shown = False
+        st("باز کردن صفحه ورود Rubika...")
+        page = self._start(on_status)
+        deadline = time.time() + 600  # 10 min, only for this button
         last_msg = ""
         while time.time() < deadline:
             if not self._page_alive(page):
                 shot = self._screenshot("browser-closed")
                 raise NotLoggedInError(
-                    "پنجره مرورگر بسته شد؛ ورود کامل نشد. دوباره تلاش کنید. "
-                    f"اسکرین‌شات: {shot}"
+                    f"پنجره مرورگر بسته شد. دوباره تلاش کنید. اسکرین‌شات: {shot}"
                 )
             if self._is_logged_in(page):
                 st("ورود تأیید شد — آماده‌سازی...")
-                page.wait_for_timeout(1500)  # let SPA finish bootstrapping
+                page.wait_for_timeout(1200)
                 if self._is_logged_in(page):
-                    st("ورود موفق")
+                    st("ورود موفق — نشست ذخیره شد")
                     return
-                # false positive during bootstrap — keep waiting
             remaining = max(0, int(deadline - time.time()))
-            msg = (
-                f"در پنجره مرورگر وارد Rubika شوید "
-                f"(کد تایید پیامک را هم بزنید)... {remaining}s"
-            )
+            msg = f"در مرورگر وارد Rubika شوید (شماره + کد تایید)... {remaining}s"
             if msg != last_msg:
                 st(msg)
                 last_msg = msg
-            if not hint_shown:
-                hint_shown = True
             time.sleep(2)
 
         shot = self._screenshot("login-timeout")
         raise NotLoggedInError(
-            "ورود به Rubika انجام نشد (مهلت ۱۰ دقیقه تمام شد). "
-            f"اسکرین‌شات: {shot}"
+            f"ورود کامل نشد (مهلت ۱۰ دقیقه). اسکرین‌شات: {shot}"
         )
+
+    def _require_session(self, page: Page, on_status: StatusCb | None = None) -> None:
+        """Fail FAST if not logged in — never wait for OTP during operations."""
+        if self._on_login_wall(page):
+            shot = self._screenshot("not-logged-in")
+            raise NotLoggedInError(
+                "نشست Rubika معتبر نیست و صفحه ورود باز شد.\n"
+                "برای ورود یک‌باره: دکمه «ورود به Rubika» را بزنید و کد تایید را وارد کنید.\n"
+                "بعد از آن، ارسال/دریافت بدون انتظار اجرا می‌شود.\n"
+                f"اسکرین‌شات: {shot}"
+            )
 
     def _open_group(self, page: Page, on_status: StatusCb | None = None) -> None:
         def st(m):
             if on_status:
                 on_status(m)
 
+        if not self.group_url:
+            raise TransportError("لینک گروه/کانال در تنظیمات خالی است")
         st(f"رفتن به گروه/کانال: {self.group_url}")
         try:
             page.goto(self.group_url, wait_until="domcontentloaded", timeout=30_000)
@@ -263,19 +290,16 @@ class RubikaWebTransport(Transport):
             # SPA may intercept; soft-fail and let search/download handle it
             st(f"ناوبری مستقیم ممکن نشد ({e}) — تلاش ادامه دارد...")
         time.sleep(2)
-        # If navigation bounced back to login, wait again (session refresh)
-        if not self._is_logged_in(page):
-            st("نشست هنوز کامل نشد؛ منتظر تکمیل ورود...")
-            self._ensure_login(page, on_status)
-            try:
-                page.goto(self.group_url, wait_until="domcontentloaded", timeout=30_000)
-                time.sleep(2)
-            except Exception:
-                pass
+        # bounced to login? fail immediately — do NOT wait for OTP
+        self._require_session(page, on_status)
 
     def _open_channel(self, on_status: StatusCb | None = None) -> Page:
+        """Open browser and jump straight to the group/channel.
+
+        No login waiting here: if the session is dead, raise immediately.
+        """
         page = self._start(on_status)
-        self._ensure_login(page, on_status)
+        self._require_session(page, on_status)
         self._open_group(page, on_status)
         return page
 
