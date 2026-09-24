@@ -18,6 +18,7 @@ class Settings:
     receive_mode: str = "full"  # full | merge | new_only
     author: str = ""
     transport: str = "rubika"  # rubika | lan (future)
+    auto_cleanup: bool = True
 
     @staticmethod
     def load() -> "Settings":

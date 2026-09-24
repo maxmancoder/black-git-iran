@@ -181,8 +181,11 @@ class ReceiveDialog(tk.Toplevel):
                 meta = zip_handler.verify_extracted(extracted)
                 status("ساخت بکاپ و جایگزینی پروژه...")
                 result = atomic_replace(project, extracted, backup_dir, mode=mode)
-                status("پاک‌سازی پوشه موقت...")
-                cleanup_dir(temp)
+                if getattr(s, "auto_cleanup", True):
+                    status("پاک‌سازی پوشه موقت...")
+                    cleanup_dir(temp)
+                else:
+                    status("پوشه موقت حفظ شد (auto cleanup خاموش)")
                 return {
                     "version": name,
                     "files": result["copied"],

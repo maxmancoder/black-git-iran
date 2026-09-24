@@ -1,7 +1,8 @@
 """Background worker + status polling for tkinter (thread-safe).
 
 The app's main loop calls poll() periodically; this class never schedules
-its own `after` callbacks (avoids duplicate/exponential timers).
+its own `after` callbacks. `log_hook` is invoked for every status message
+even while a dialog has bound its own handlers.
 """
 
 import queue
@@ -14,6 +15,7 @@ class Worker:
     def __init__(self, poll_ms: int = 100):
         self.queue: queue.Queue = queue.Queue()
         self.poll_ms = poll_ms
+        self.log_hook: Callable[[str, str], None] | None = None  # (level, msg)
         self._thread: threading.Thread | None = None
         self._active = False
         self._finish_notified = True
@@ -61,12 +63,31 @@ class Worker:
         return True
 
     def _emit(self, kind: str, payload: Any) -> None:
-        if kind == "status" and self._on_status:
-            self._on_status(payload)
-        elif kind == "result" and self._on_result:
-            self._on_result(payload)
-        elif kind == "error" and self._on_error:
-            self._on_error(payload)
+        if kind == "status":
+            if self.log_hook:
+                try:
+                    self.log_hook("info", payload)
+                except Exception:
+                    pass
+            if self._on_status:
+                self._on_status(payload)
+        elif kind == "result":
+            if self.log_hook:
+                try:
+                    self.log_hook("ok", "عملیات با موفقیت انجام شد")
+                except Exception:
+                    pass
+            if self._on_result:
+                self._on_result(payload)
+        elif kind == "error":
+            first = str(payload).splitlines()[0] if payload else "خطا"
+            if self.log_hook:
+                try:
+                    self.log_hook("err", first)
+                except Exception:
+                    pass
+            if self._on_error:
+                self._on_error(payload)
 
     def poll(self, widget=None) -> None:
         while True:

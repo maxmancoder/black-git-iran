@@ -194,11 +194,14 @@ class SendDialog(tk.Toplevel):
                 transport.upload(zip_path, on_status=status)
             finally:
                 transport.close()
-            status("پاک‌سازی زیپ موقت...")
-            try:
-                zip_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            if getattr(s, "auto_cleanup", True):
+                status("پاک‌سازی زیپ موقت...")
+                try:
+                    zip_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            else:
+                status("زیپ موقت حفظ شد (auto cleanup خاموش)")
             return {
                 "filename": zip_name,
                 "size": size,
