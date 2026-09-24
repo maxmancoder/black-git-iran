@@ -24,47 +24,72 @@ from ..base import NotLoggedInError, StatusCb, Transport, TransportError
 
 RUBIKA_URL = "https://web.rubika.ir/"
 
-# ── selectors (update these if Rubika UI changes) ──────────────────
-SEL_CHAT_LIST = '[data-testid="chat-list"], .chat-list, #chat-list'
+# ── selectors (from Rubika Web Angular bundle fa-ir v4.4.34) ───────
+SEL_CHAT_LIST = (
+    '[rb-chat-item], .chatlist-chat, .chatlist, .chatlist-container, '
+    'rb-chats-list, page-chats'
+)
 SEL_SEARCH_INPUT = (
-    'input[placeholder*="Search"], input[placeholder*="جستجو"], '
-    'input[type="search"], [aria-label*="Search"], [aria-label*="جستجو"]'
+    '.input-search-input, .input-search input, '
+    'input[placeholder="جستجو"], input[placeholder*="جستجو"], '
+    'input[placeholder*="Search"]'
 )
 SEL_ATTACH_INPUT = 'input[type="file"]'
 SEL_ATTACH_BUTTON = (
     '[aria-label*="attach" i], [aria-label*="Attach" i], '
     '[aria-label*="فایل"], [title*="attach" i], [title*="فایل"], '
-    'button[aria-label*="clip" i]'
+    'button[aria-label*="clip" i], .rbico-attach, .rbico-paperclip'
 )
 SEL_SEND_BUTTON = (
+    '.btn-send, .btn-send-container .btn-icon, '
     'button[aria-label*="send" i], [title*="send" i], [title*="ارسال"]'
 )
 SEL_MESSAGE_INPUT = (
-    'textarea, [contenteditable="true"], '
-    'input[placeholder*="Message"], input[placeholder*="پیام"]'
+    'textarea.input-message-input, .input-message-input, '
+    'textarea[name="draftMessage"], textarea, [contenteditable="true"]'
 )
 SEL_DOWNLOAD = (
     'button[aria-label*="download" i], a[download], '
-    '[title*="download" i], [title*="دانلود"]'
+    '[title*="download" i], [title*="دانلود"], .rbico-download'
 )
-# Saved Messages (پیام‌های ذخیره شده) — used to enter the group by link
+# Exact locale string from assets/locales/fa-ir.json (plain spaces!)
+SEL_SAVED_TITLE = "پیام های ذخیره شده"
 SEL_SAVED_KEYWORDS = [
-    "پیام های ذخیره شده",
+    "پیام های ذخیره شده",  # fa-ir: user_name_saved_msgs
     "پیام‌های ذخیره شده",
     "ذخیره شده",
     "Saved Messages",
-    "Saved",
-    "Bookmark",
 ]
+# sidebar chat-list item that holds Saved Messages (CSS-only: no text= mixing)
+SEL_SAVED_CHAT_ITEM = (
+    f'[rb-chat-item]:has-text("{SEL_SAVED_TITLE}"), '
+    f'.chatlist-chat:has-text("{SEL_SAVED_TITLE}"), '
+    f'.peer-title:has-text("{SEL_SAVED_TITLE}")'
+)
+# main-menu entry (rb-app-menu): key user_name_saved_msgs
+SEL_MAIN_MENU = (
+    '[title="منوی اصلی"], [aria-label="منوی اصلی"], '
+    '[title*="منو"], [aria-label*="منو"], .rbico-menu'
+)
+SEL_MENU_SAVED = (
+    '[rb-localize="user_name_saved_msgs"], .btn-menu-item.rbico-saved, '
+    '.btn-menu-item:has-text("ذخیره شده")'
+)
 SEL_JOIN_BUTTON = (
-    'button:has-text("Join"), button:has-text("عضویت"), '
-    'button:has-text("Join Group"), button:has-text("Join Channel"), '
-    '[class*="join-btn" i], [data-testid*="join" i]'
+    '.chat-join, button:has-text("عضویت در گروه"), '
+    'button:has-text("عضویت در کانال"), button:has-text("پیوستن"), '
+    'button:has-text("Join"), [class*="join-btn" i]'
+)
+# sent-message body / link inside it
+SEL_MESSAGE_TEXT = '[rb-message-text], .rb-message-text'
+SEL_INVITE_LINK = (
+    'a[href*="rubika.ir/joing"], a[rb-abs-link], [rb-abs-link], '
+    'a[href*="/joing/"]'
 )
 # Strong positive: user is inside the messenger (not a login/OTP screen)
 SEL_LOGGED_IN = (
-    '[data-testid="chat-list"], .chat-list, #chat-list, '
-    '[data-testid="message-input"], .message-input, '
+    '[rb-chat-item], .chatlist-chat, .chatlist-container, '
+    'rb-chats-list, page-chats, .input-message-input, '
     'div[contenteditable="true"]'
 )
 # Strong negative: still on phone / password / OTP login screens
@@ -289,47 +314,97 @@ class RubikaWebTransport(Transport):
             )
 
     # ── enter group via Saved Messages (send link -> click link) ────
+    def _composer_visible(self, page: Page) -> bool:
+        """True when the message composer of an OPEN chat is on screen."""
+        try:
+            loc = page.locator(SEL_MESSAGE_INPUT)
+            for i in range(min(loc.count(), 6)):
+                try:
+                    if loc.nth(i).is_visible(timeout=800):
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return False
+
+    def _try_click_saved(self, page: Page, sel: str) -> bool:
+        """Click `sel` (Saved Messages entry); True if chat composer opened."""
+        try:
+            loc = page.locator(sel)
+            if not loc.count():
+                return False
+            for i in range(min(loc.count(), 6)):
+                el = loc.nth(i)
+                try:
+                    if not el.is_visible(timeout=800):
+                        continue
+                    el.click(timeout=4000)
+                    page.wait_for_timeout(1500)
+                    if self._composer_visible(page):
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return False
+
     def _open_saved_messages(self, page: Page, on_status: StatusCb | None = None) -> None:
-        """Open the 'Saved Messages' chat (chat list, or search fallback)."""
+        """Open the «پیام های ذخیره شده» chat.
+
+        Strategies (in order):
+          1) click it in the sidebar chat list
+          2) type «ذخیره» in sidebar search and pick the result
+          3) main menu (منوی اصلی) -> Saved Messages entry
+        """
         def st(m):
             if on_status:
                 on_status(m)
 
-        st("باز کردن پیام‌های ذخیره شده...")
+        st("باز کردن پیام های ذخیره شده...")
 
-        # 1) direct hit in chat list
-        for kw in SEL_SAVED_KEYWORDS:
-            try:
-                item = page.locator(f"text={kw}")
-                if item.count() and item.first.is_visible(timeout=1200):
-                    item.first.click(timeout=4000)
-                    page.wait_for_timeout(1500)
-                    st("پیام‌های ذخیره شده باز شد")
-                    return
-            except Exception:
-                continue
+        # 1) direct hit in the chat list
+        for sel in (
+            SEL_SAVED_CHAT_ITEM,
+            f'[rb-chat-item]:has(.rbico-saved)',
+            f'.chatlist-chat:has(.rbico-saved)',
+        ):
+            if self._try_click_saved(page, sel):
+                st("پیام های ذخیره شده باز شد")
+                return
 
-        # 2) search for it
+        # 2) sidebar search: «ذخیره»
         try:
             self._open_search(page)
             page.keyboard.type("ذخیره", delay=50)
             page.wait_for_timeout(2000)
             for kw in SEL_SAVED_KEYWORDS:
+                if self._try_click_saved(page, f'text={kw}'):
+                    st("پیام های ذخیره شده باز شد (از جستجو)")
+                    return
+        except Exception:
+            pass
+
+        # 3) main menu -> saved entry
+        try:
+            menu = page.locator(SEL_MAIN_MENU)
+            for i in range(min(menu.count(), 6)):
                 try:
-                    res = page.locator(f"text={kw}")
-                    if res.count() and res.first.is_visible(timeout=1000):
-                        res.first.click(timeout=4000)
-                        page.wait_for_timeout(1500)
-                        st("پیام‌های ذخیره شده باز شد")
-                        return
+                    if menu.nth(i).is_visible(timeout=800):
+                        menu.nth(i).click(timeout=3000)
+                        page.wait_for_timeout(800)
+                        break
                 except Exception:
                     continue
+            if self._try_click_saved(page, SEL_MENU_SAVED):
+                st("پیام های ذخیره شده باز شد (از منو)")
+                return
         except Exception:
             pass
 
         shot = self._screenshot("saved-not-found")
         raise TransportError(
-            "چت «پیام‌های ذخیره شده» پیدا نشد. "
+            "چت «پیام های ذخیره شده» پیدا نشد. "
             f"سلکتورها را بررسی کنید. اسکرین‌شات: {shot}"
         )
 
@@ -361,10 +436,14 @@ class RubikaWebTransport(Transport):
 
     def _click_sent_link(self, page: Page, url: str) -> None:
         """Click the link we just sent in Saved Messages to enter the group."""
-        # prefer real anchors, fall back to message text
+        # prefer invite anchors / message-body links, last message first
         selectors = [
+            f'a[href*="rubika.ir/joing"]',
+            f'a[href*="/joing/"]',
+            f'{SEL_MESSAGE_TEXT} a[href="{url}"]',
             f'a[href="{url}"]',
             f'a[href*="{url}"]',
+            f'{SEL_MESSAGE_TEXT}:has-text("{url}")',
             f'a:has-text("{url}")',
             f'text={url}',
         ]
@@ -462,7 +541,8 @@ class RubikaWebTransport(Transport):
         if box.count() == 0 or not box.first.is_visible():
             icon = page.locator(
                 '[aria-label*="search" i], [title*="search" i], '
-                '[aria-label*="جستجو"], .icon-search, button:has(svg)'
+                '[aria-label*="جستجو"], .rbico-search, .icon-search, '
+                'button:has(svg)'
             )
             for i in range(min(icon.count(), 8)):
                 try:
