@@ -47,6 +47,20 @@ SEL_DOWNLOAD = (
     'button[aria-label*="download" i], a[download], '
     '[title*="download" i], [title*="دانلود"]'
 )
+# Saved Messages (پیام‌های ذخیره شده) — used to enter the group by link
+SEL_SAVED_KEYWORDS = [
+    "پیام های ذخیره شده",
+    "پیام‌های ذخیره شده",
+    "ذخیره شده",
+    "Saved Messages",
+    "Saved",
+    "Bookmark",
+]
+SEL_JOIN_BUTTON = (
+    'button:has-text("Join"), button:has-text("عضویت"), '
+    'button:has-text("Join Group"), button:has-text("Join Channel"), '
+    '[class*="join-btn" i], [data-testid*="join" i]'
+)
 # Strong positive: user is inside the messenger (not a login/OTP screen)
 SEL_LOGGED_IN = (
     '[data-testid="chat-list"], .chat-list, #chat-list, '
@@ -274,29 +288,167 @@ class RubikaWebTransport(Transport):
                 f"اسکرین‌شات: {shot}"
             )
 
+    # ── enter group via Saved Messages (send link -> click link) ────
+    def _open_saved_messages(self, page: Page, on_status: StatusCb | None = None) -> None:
+        """Open the 'Saved Messages' chat (chat list, or search fallback)."""
+        def st(m):
+            if on_status:
+                on_status(m)
+
+        st("باز کردن پیام‌های ذخیره شده...")
+
+        # 1) direct hit in chat list
+        for kw in SEL_SAVED_KEYWORDS:
+            try:
+                item = page.locator(f"text={kw}")
+                if item.count() and item.first.is_visible(timeout=1200):
+                    item.first.click(timeout=4000)
+                    page.wait_for_timeout(1500)
+                    st("پیام‌های ذخیره شده باز شد")
+                    return
+            except Exception:
+                continue
+
+        # 2) search for it
+        try:
+            self._open_search(page)
+            page.keyboard.type("ذخیره", delay=50)
+            page.wait_for_timeout(2000)
+            for kw in SEL_SAVED_KEYWORDS:
+                try:
+                    res = page.locator(f"text={kw}")
+                    if res.count() and res.first.is_visible(timeout=1000):
+                        res.first.click(timeout=4000)
+                        page.wait_for_timeout(1500)
+                        st("پیام‌های ذخیره شده باز شد")
+                        return
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        shot = self._screenshot("saved-not-found")
+        raise TransportError(
+            "چت «پیام‌های ذخیره شده» پیدا نشد. "
+            f"سلکتورها را بررسی کنید. اسکرین‌شات: {shot}"
+        )
+
+    def _compose_and_send(self, page: Page, text: str) -> None:
+        """Type `text` into the open chat composer and send it."""
+        box = page.locator(SEL_MESSAGE_INPUT)
+        if not box.count():
+            raise TransportError(
+                "جعبه نوشتن پیام پیدا نشد — سلکتور SEL_MESSAGE_INPUT را به‌روز کنید"
+            )
+        box.first.click(timeout=5000)
+        page.wait_for_timeout(300)
+        # clear composer (works for textarea and contenteditable)
+        page.keyboard.press("Control+A")
+        page.keyboard.press("Delete")
+        page.keyboard.type(text, delay=12)
+        page.wait_for_timeout(400)
+        sent = False
+        try:
+            sb = page.locator(SEL_SEND_BUTTON)
+            if sb.count() and sb.first.is_visible():
+                sb.first.click()
+                sent = True
+        except Exception:
+            sent = False
+        if not sent:
+            page.keyboard.press("Enter")
+        page.wait_for_timeout(1500)
+
+    def _click_sent_link(self, page: Page, url: str) -> None:
+        """Click the link we just sent in Saved Messages to enter the group."""
+        # prefer real anchors, fall back to message text
+        selectors = [
+            f'a[href="{url}"]',
+            f'a[href*="{url}"]',
+            f'a:has-text("{url}")',
+            f'text={url}',
+        ]
+        target = None
+        for sel in selectors:
+            try:
+                loc = page.locator(sel)
+                if loc.count():
+                    target = loc.last
+                    target.scroll_into_view_if_needed(timeout=4000)
+                    break
+            except Exception:
+                continue
+        if target is None:
+            shot = self._screenshot("link-not-clicked")
+            raise TransportError(
+                f"لینک ارسال‌شده در چت پیدا نشد. اسکرین‌شات: {shot}"
+            )
+        try:
+            target.click(timeout=6000)
+        except Exception:
+            # some UIs need force click on the message bubble
+            target.click(timeout=6000, force=True)
+        page.wait_for_timeout(2500)
+
+    def _join_if_prompt(self, page: Page, on_status: StatusCb | None = None) -> None:
+        """If Rubika shows a Join confirmation, click it."""
+        try:
+            btn = page.locator(SEL_JOIN_BUTTON)
+            for i in range(min(btn.count(), 4)):
+                try:
+                    if btn.nth(i).is_visible(timeout=1500):
+                        if on_status:
+                            on_status("تأیید عضویت در گروه/کانال...")
+                        btn.nth(i).click(timeout=4000)
+                        page.wait_for_timeout(1500)
+                        return
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
     def _open_group(self, page: Page, on_status: StatusCb | None = None) -> None:
+        """Enter the group/channel the new way:
+
+        Saved Messages -> type group link -> send -> click the sent link.
+        Direct goto is only a fallback if this flow fails.
+        """
         def st(m):
             if on_status:
                 on_status(m)
 
         if not self.group_url:
             raise TransportError("لینک گروه/کانال در تنظیمات خالی است")
-        st(f"رفتن به گروه/کانال: {self.group_url}")
+
         try:
-            page.goto(self.group_url, wait_until="domcontentloaded", timeout=30_000)
-        except PWTimeout:
-            pass
+            self._open_saved_messages(page, on_status)
+            st(f"ارسال لینک: {self.group_url}")
+            self._compose_and_send(page, self.group_url)
+            st("کلیک روی لینک و ورود به گروه/کانال...")
+            self._click_sent_link(page, self.group_url)
+            self._join_if_prompt(page, on_status)
+            st("وارد گروه/کانال شد")
+        except NotLoggedInError:
+            raise
         except Exception as e:
-            # SPA may intercept; soft-fail and let search/download handle it
-            st(f"ناوبری مستقیم ممکن نشد ({e}) — تلاش ادامه دارد...")
+            # fallback: direct navigation (legacy path)
+            st(f"روش پیام ذخیره ممکن نشد ({e}) — تلاش مستقیم...")
+            shot = self._screenshot("saved-fallback")
+            try:
+                page.goto(self.group_url, wait_until="domcontentloaded", timeout=30_000)
+            except PWTimeout:
+                pass
+            if shot:
+                st("از روش مستقیم استفاده شد")
+
         time.sleep(2)
         # bounced to login? fail immediately — do NOT wait for OTP
         self._require_session(page, on_status)
 
     def _open_channel(self, on_status: StatusCb | None = None) -> Page:
-        """Open browser and jump straight to the group/channel.
+        """Open browser and enter the group via Saved Messages link flow.
 
-        No login waiting here: if the session is dead, raise immediately.
+        No login waiting: if the session is dead, raise immediately.
         """
         page = self._start(on_status)
         self._require_session(page, on_status)
