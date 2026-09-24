@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Black Git Iran local state
+.bgi_deps_ok
+browser-profile/
+backups/
+upload-one-time/
+debug-*.png
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

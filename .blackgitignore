@@ -1,0 +1,15 @@
+# حذف از زیپ (مثل .gitignore)
+node_modules/
+.git/
+.next/
+.nuxt/
+dist/
+build/
+.venv/
+venv/
+__pycache__/
+*.log
+*.pyc
+.env
+.DS_Store
+Thumbs.db
